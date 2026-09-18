@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Annotated
 
 from pydantic import BaseModel, Field
 
+# Amounts are integer millilitres: floats (even 3.0) and booleans are rejected
+# at the boundary instead of being coerced.
+PositiveMl = Annotated[int, Field(strict=True, gt=0)]
+LeaseSeconds = Annotated[int, Field(strict=True, ge=5, le=300)]
+
 
 class BatchCreate(BaseModel):
-    total_ml: int = Field(gt=0, description="batch capacity in integer millilitres; immutable after creation")
+    total_ml: PositiveMl = Field(description="batch capacity in integer millilitres; immutable after creation")
 
 
 class BatchView(BaseModel):
@@ -19,8 +25,8 @@ class BatchView(BaseModel):
 
 
 class ReserveCreate(BaseModel):
-    amount_ml: int = Field(gt=0)
-    lease_seconds: int = Field(ge=5, le=300)
+    amount_ml: PositiveMl
+    lease_seconds: LeaseSeconds
 
 
 class ReservationView(BaseModel):

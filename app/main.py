@@ -58,14 +58,7 @@ def create_batch(body: BatchCreate, conn: Connection = Depends(get_conn)) -> Bat
 
 @app.get("/batches", response_model=list[BatchView], tags=["batches"])
 def list_batches(conn: Connection = Depends(get_conn)) -> list[dict]:
-    rows = conn.execute(
-        """
-        SELECT id, total_ml, available_ml, reserved_ml, confirmed_ml, created_at
-          FROM batches
-         ORDER BY id
-        """
-    ).fetchall()
-    return [dict(r) for r in rows]
+    return repository.list_batches(conn)
 
 
 @app.get("/batches/{batch_id}", response_model=BatchView, tags=["batches"])

@@ -132,19 +132,42 @@ def get_batch(conn: Connection, batch_id: int) -> dict[str, Any]:
     return batch
 
 
-def reserve(conn: Connection, batch_id: int, amount_ml: int, lease_seconds: int) -> dict[str, Any]:
-    if not isinstance(amount_ml, int) or amount_ml <= 0:
+def list_batches(conn: Connection) -> list[dict[str, Any]]:
+    # Settle every batch (in id order, which keeps locking deadlock-free) so the
+    # list view reports the same post-settlement balances as GET /batches/{id}.
+    ids = [r["id"] for r in conn.execute("SELECT id FROM batches ORDER BY id").fetchall()]
+    for bid in ids:
+        _lock_and_settle(conn, bid)
+    rows = conn.execute(
+        """
+        SELECT id, total_ml, available_ml, reserved_ml, confirmed_ml, created_at
+          FROM batches
+         ORDER BY id
+        """
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _strict_positive_int(name: str, value: Any) -> None:
+    # bool is a subclass of int but is not an integer millilitre amount.
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
         raise ServiceError(
             422,
             ErrorCode.VALIDATION_ERROR,
-            "amount_ml must be a positive integer",
-            details={"field": "amount_ml", "value": amount_ml},
+            f"{name} must be a positive integer",
+            details={"field": name, "value": value},
         )
-    if not LEASE_MIN_SECONDS <= lease_seconds <= LEASE_MAX_SECONDS:
+
+
+def reserve(conn: Connection, batch_id: int, amount_ml: int, lease_seconds: int) -> dict[str, Any]:
+    _strict_positive_int("amount_ml", amount_ml)
+    if not isinstance(lease_seconds, int) or isinstance(lease_seconds, bool) or not (
+        LEASE_MIN_SECONDS <= lease_seconds <= LEASE_MAX_SECONDS
+    ):
         raise ServiceError(
             422,
             ErrorCode.VALIDATION_ERROR,
-            f"lease_seconds must be between {LEASE_MIN_SECONDS} and {LEASE_MAX_SECONDS}",
+            f"lease_seconds must be an integer between {LEASE_MIN_SECONDS} and {LEASE_MAX_SECONDS}",
             details={"field": "lease_seconds", "value": lease_seconds},
         )
 

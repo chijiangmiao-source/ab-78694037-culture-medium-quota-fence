@@ -5,6 +5,8 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 
+import pytest
+
 from app import repository
 from app.errors import ErrorCode, ServiceError
 
@@ -227,3 +229,52 @@ def test_mixed_concurrent_lifecycle_never_overcommits(pool):
     assert b["confirmed_ml"] % 250 == 0
     assert b["confirmed_ml"] <= 250 * len(tokens)
     assert b["confirmed_ml"] + b["available_ml"] == 5_000
+
+
+def test_reserve_storm_after_expiry_reuses_freed_quota_once(pool):
+    # The whole quota is held by short leases. At a later DB instant a storm of
+    # reservations hits concurrently: the first mutator settles the expired
+    # holds, and the freed quota must be handed out exactly once in total.
+    with pool.connection() as conn:
+        bid = repository.create_batch(conn, 1000)["id"]
+        t0 = repository._db_now(conn)
+        freeze_at(conn, t0)
+        old1 = repository.reserve(conn, bid, 600, 5)["token"]
+        old2 = repository.reserve(conn, bid, 400, 5)["token"]
+
+    n_workers = 30
+    ask = 200
+    barrier = threading.Barrier(n_workers)
+
+    def worker(_):
+        with pool.connection() as conn:
+            # Each transaction carries its own (later) database instant.
+            freeze_at(conn, t0 + timedelta(seconds=6))
+            barrier.wait()
+            try:
+                r = repository.reserve(conn, bid, ask, 300)
+                return ("ok", r["token"])
+            except ServiceError as e:
+                return (e.code.value, None)
+
+    with ThreadPoolExecutor(max_workers=n_workers) as ex:
+        results = list(ex.map(worker, range(n_workers)))
+
+    ok = [r for r in results if r[0] == "ok"]
+    short = [r for r in results if r[0] == ErrorCode.INSUFFICIENT_BALANCE.value]
+    assert len(ok) == 1000 // ask
+    assert len(ok) + len(short) == n_workers
+    assert len({t for _, t in ok}) == len(ok)
+
+    b = assert_conserved(pool, bid)
+    assert (b["available_ml"], b["reserved_ml"], b["confirmed_ml"]) == (
+        0, 1000, 0,
+    )
+
+    # The expired tokens remain dead even though the quota was fully re-lent.
+    with pool.connection() as conn:
+        freeze_at(conn, t0 + timedelta(seconds=6))
+        for token in (old1, old2):
+            with pytest.raises(ServiceError) as ei:
+                repository.confirm(conn, bid, token)
+            assert ei.value.code is ErrorCode.RESERVATION_EXPIRED

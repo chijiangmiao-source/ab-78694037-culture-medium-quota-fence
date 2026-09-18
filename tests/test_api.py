@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+import pytest
+
 from app import repository
 
 from .conftest import assert_conserved, fetch_batch, freeze_at
@@ -128,6 +130,43 @@ def test_lease_validation_http(client):
     assert r1.status_code == 422
     r2 = client.post(f"/batches/{bid}/reservations", json={"amount_ml": 1, "lease_seconds": 301})
     assert r2.status_code == 422
+
+
+@pytest.mark.parametrize("value", ["3.0", "3.5", "true", "false", '"5"'])
+def test_amount_ml_must_be_strict_integer_http(client, value):
+    bid = _batch(client)
+    r = client.post(
+        f"/batches/{bid}/reservations",
+        content=(f'{{"amount_ml": {value}, "lease_seconds": 60}}').encode(),
+        headers={"content-type": "application/json"},
+    )
+    assert r.status_code == 422
+    assert r.json()["error"]["code"] == "validation_error"
+
+
+@pytest.mark.parametrize("value", ["3.0", "true"])
+def test_total_ml_must_be_strict_integer_http(client, value):
+    r = client.post(
+        "/batches",
+        content=(f'{{"total_ml": {value}}}').encode(),
+        headers={"content-type": "application/json"},
+    )
+    assert r.status_code == 422
+    assert r.json()["error"]["code"] == "validation_error"
+
+
+def test_list_batches_settles_expired_holds(client):
+    bid = _batch(client, 50)
+    assert client.post(
+        f"/batches/{bid}/reservations", json={"amount_ml": 50, "lease_seconds": 5}
+    ).status_code == 201
+    # No other endpoint is touched; the list read itself must perform settlement.
+    import time
+
+    time.sleep(5.2)
+    rows = {b["id"]: b for b in client.get("/batches").json()}
+    b = rows[bid]
+    assert (b["available_ml"], b["reserved_ml"], b["confirmed_ml"]) == (50, 0, 0)
 
 
 def test_fence_tokens_monotonic_http(client):
