@@ -1,0 +1,54 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: quota
+      POSTGRES_PASSWORD: quota
+      POSTGRES_DB: quota
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U quota -d quota"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  api:
+    build: .
+    environment:
+      DATABASE_URL: postgresql://quota:quota@db:5432/quota
+      DB_MIN_POOL_SIZE: "2"
+      DB_MAX_POOL_SIZE: "16"
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=2).status == 200 else 1)"
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  # One-shot acceptance gate. Exits 0 when the whole reserve/confirm/
+  # cancel/expiry story behaves correctly against the running stack:
+  #   docker compose build && docker compose run --rm verify
+  verify:
+    build: .
+    command: ["python", "verify/acceptance.py"]
+    environment:
+      DATABASE_URL: postgresql://quota:quota@db:5432/quota
+      API_BASE_URL: http://api:8000
+    depends_on:
+      api:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    restart: "no"
+
+volumes:
+  pgdata:
