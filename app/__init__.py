@@ -1,0 +1,1 @@
+"""Medium reservation fence service."""

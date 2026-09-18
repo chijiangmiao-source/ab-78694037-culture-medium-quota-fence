@@ -1,0 +1,59 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: medium
+      POSTGRES_PASSWORD: medium
+      POSTGRES_DB: medium
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U medium -d medium"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      target: base
+    environment:
+      DATABASE_URL: postgresql://medium:medium@db:5432/medium
+      DB_POOL_MAX_SIZE: "30"
+      DB_HOST: db
+      DB_PORT: "5432"
+    ports:
+      # Override the host-side port with API_PORT, e.g. API_PORT=9090 docker compose up
+      - "${API_PORT:-8080}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)"
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  # One-off acceptance run: `docker compose up --build verify` (or
+  # `docker compose run --rm verify`) executes the suite once and exits.
+  verify:
+    build:
+      context: .
+      target: verify
+    environment:
+      BASE_URL: http://api:8000
+    depends_on:
+      api:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    restart: "no"
+
+volumes:
+  pgdata:
